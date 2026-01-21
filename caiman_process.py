@@ -38,8 +38,8 @@ def caiman_main(fr, fnames, out, K=25, rf=25, stride_cnmf=10, z=0, dend=False):
 
     # Look for the best parameters for this 2p system and never change them again :)
     # motion correction parameters
-    niter_rig = 3  # number of iterations for rigid motion correction
-    max_shifts = (64, 64)  # maximum allow rigid shift
+    niter_rig = 1  # number of iterations for rigid motion correction
+    max_shifts = (32, 32)  # maximum allow rigid shift
     splits_rig = 10  # for parallelization split the movies in  num_splits chuncks across time
     strides = (48, 48)  # start a new patch for pw-rigid motion correction every x pixels
     overlaps = (24, 24)  # overlap between patches (size of patch strides+overlaps)
@@ -109,9 +109,9 @@ def caiman_main(fr, fnames, out, K=25, rf=25, stride_cnmf=10, z=0, dend=False):
     m_rig = cm.load(mc.mmap_file)
     bord_px_rig = np.ceil(np.max(mc.shifts_rig)).astype(int)
     # visualize templates
-    plt.figure(figsize=(20, 10))
-    plt.imshow(mc.total_template_rig, cmap='gray')
-    plt.close()
+    # plt.figure(figsize=(20, 10))
+    # plt.imshow(mc.total_template_rig, cmap='gray')
+    # plt.close()
     #plt.show()
 
     # %% plot rigid shifts

@@ -71,14 +71,25 @@ def merge_tiffs_obsolete(fls, outpath, num=1, tifn='bigtif{}.tif', memmap=True):
     return fnames
 
 
-def merge_tiffs(fls, outpath, num=1, fmm='bigmem', tifn='mergetif{}.tif', order='F', del_mmap=True):
+def merge_tiffs(fls, outpath, num=1000, fmm='bigmem', tifn='mergetif{}.tif', order='F', del_mmap=True):
     # Takes in a list of single tiff fls and save them in memmap
     imgs = tifffile.TiffSequence(fls)
-    #totlen = len(imgs.files)
-    totlen = 1000
+
+    #totlen = 1000
     dims = imgs.imread(imgs.files[0]).shape
-    d3 = dims[2] if len(dims) == 3 else 1
-    d1, d2 = dims[0], dims[1]
+
+    totlen = 0
+    lenList = []
+    if len(dims) == 2:
+        totlen = len(imgs.files)
+    else:
+        for ff in imgs.files:
+            dim = imgs.imread(ff).shape
+            totlen += dim[0]
+            lenList.append(dim[0])
+
+    d3 = dims[0] if len(dims) == 3 else 1
+    d1, d2 = dims[1], dims[2]
     fnamemm = os.path.join(outpath, '{}_d1_{}_d2_{}_d3_{}_order_{}_frames_{}_.mmap'.format(fmm, d1, d2, d3, order,
                                                                                       totlen))
 
@@ -86,13 +97,19 @@ def merge_tiffs(fls, outpath, num=1, fmm='bigmem', tifn='mergetif{}.tif', order=
     np.seterr(all='ignore')
 
     t = time.time()
-    bigmem = np.memmap(fnamemm, mode='w+', dtype=np.float32, shape=(totlen, dims[0], dims[1]), order=order)
+    bigmem = np.memmap(fnamemm, mode='w+', dtype=np.float32, shape=(totlen, dims[1], dims[2]), order=order)
     print(time.time()-t)
 
     # Fill the mmap
-    for i in tqdm(range(totlen)):
+    currFrame = 0
+    for i in tqdm(range(len(imgs.files))):
         #t = time.time()
-        bigmem[i, :, :] = imgs.imread(imgs.files[i])
+        if len(lenList) > 0:
+            bigmem[currFrame:currFrame+lenList[i], :, :] = imgs.imread(imgs.files[i])
+            currFrame += lenList[i]
+        else:
+            bigmem[currFrame, :, :] = imgs.imread(imgs.files[i])
+            currFrame += 1
         #time.time() - t
 
     bigmem.flush()
