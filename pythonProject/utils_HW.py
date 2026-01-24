@@ -63,18 +63,34 @@ def convert_F_to_C_memmap(
 
     return fname_c
 
+def frame_row_corr_batch(frames, ref0, ref_norm):
+    X = frames[:, 1:, :].astype(np.float32)
+    X0 = X - X.mean(axis=2, keepdims=True)
+
+    num = np.sum(X0 * ref0[None, :, :], axis=2)
+    denom = np.sqrt(np.sum(X0 * X0, axis=2)) * ref_norm[None, :]
+
+    corr = np.where(denom > 0, num / denom, 0)
+    return corr.mean(axis=1)
+
 def frame_row_corr(frame, ref):
     """
     Compute average correlation between consecutive rows of a frame.
     Lower correlation → likely shifted rows.
     """
-    nRows = frame.shape[0]
-    corr_vals = []
-    for r in range(1, nRows):
-        corr = np.corrcoef(frame[r, :], ref[r, :])[0,1]
-        corr_vals.append(corr)
-    return np.mean(corr_vals)
+    X = np.array(frame[:], dtype=np.float32, copy=True)
+    Y = np.array(ref[:], dtype=np.float32, copy=True)
 
+    X0 = X - X.mean(axis=1, keepdims=True)
+    Y0 = Y - Y.mean(axis=1, keepdims=True)
+
+    num = np.sum(X0 * Y0, axis=1)
+    denom = np.sqrt(
+        np.sum(X0 * X0, axis=1) * np.sum(Y0 * Y0, axis=1)
+    )
+
+    corr = np.where(denom > 0, num / denom, 0)
+    return float(corr.mean())
     # idx = 9775
     # corr_vals_f1 = frame_row_corr(images[idx,:,:], ref)
 

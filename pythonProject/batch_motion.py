@@ -10,6 +10,7 @@ import os
 import psutil
 import re
 import gc
+import time
 
 import caiman as cm
 from caiman.source_extraction import cnmf
@@ -39,16 +40,19 @@ def frame_row_corr_worker(args):
     images = np.memmap(mmap_file, dtype=dtype, mode='r', shape=shape)
     return frame_row_corr(images[ff], ref)
 
-def main():
-    # set root path
-    root_path = r'Y:\HongliWang\Miniscope\ASDC001'
+def main(root_path, if_batch=False):
 
     # find all sessions
     # find all image videos
+    if if_batch: # if batch processing, get all folders under root_path
+        session_list = glob.glob(os.path.join(root_path, '**'))
+    else: # single folder processing
+        session_list = [root_path]
+
     sessions_todo = []
     ImgVideos_list = []
     ImgName_list = []
-    session_list = glob.glob(os.path.join(root_path, '**'))
+    
     for ses in session_list:
         # check if img video exists, and processed video does not exist
         Imgvideo = glob.glob(os.path.join(ses, '*_ImgVideo*.avi'))
@@ -87,11 +91,39 @@ def main():
 
     #%% go through each session
     for idx,ses in enumerate(sessions_todo):
+        
+        #%% ---------------- LOGGING SETUP ----------------
+        #log_dir = r'/global/scratch/users/hongliwang/miniscope/test'
+        log_dir = os.path.join(ses,'temp')
+        os.makedirs(log_dir, exist_ok=True)
+        logfile = os.path.join(log_dir, 'preprocess.log')
+
+        logger = logging.getLogger('preprocess')
+        logger.setLevel(logging.INFO)
+
+        logfmt = logging.Formatter(
+            '%(asctime)s | %(levelname)s | %(process)d | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+
+        fh = logging.FileHandler(logfile)
+        fh.setFormatter(logfmt)
+        logger.addHandler(fh)
+        logger.info("===== preprocess started =====")
+        t_total_start = time.perf_counter()
+
+        # limit threading
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+        os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+
+
         movie_path = ImgVideos_list[idx]
         out_path = os.path.join(ses,'temp')
         os.makedirs(out_path, exist_ok=True)
         print('Processing session: {}'.format(ses))
-        sesName = ImgName_list[idx][0]
+        sesName = ImgName_list[idx][0][0:-9]
         # define parameters
         os.environ['CAIMAN_DATA']=ses
         # dataset dependent parameters
@@ -123,6 +155,11 @@ def main():
 
         parameters = params.CNMFParams(params_dict=mc_dict)
         mot_correct = MotionCorrect(movie_path, dview=cluster, **parameters.get_group('motion'))
+        
+        t0 = time.perf_counter() # motion correction start time
+        logger.info(f"Motion correction parameters: {mc_dict}")
+
+
         if motion_correct and not os.path.exists(os.path.join(out_path, sesName + '_rigid_shifts.png')):
             # do motion correction rigid
             
@@ -145,111 +182,113 @@ def main():
             #fname_new = cm.save_memmap(fname_mc, base_name='memmap_', order='C',
             #                           border_to_0=bord_px)
         else:  # if no motion correction just memory map the file
-            fname_mc = glob.glob(os.path.join(out_path, sesName+'*_rig_*.mmap'))
+            fname_mc = glob.glob(os.path.join(out_path, sesName+'*_rig_*_order_F*.mmap'))
             
         print('Finished processing session: {}'.format(ses))
+        logger.info(f"Motion correcttion finished in ({time.perf_counter() - t0:.2f} s)")
 
-        # after motion correction, find the memmap file in F order and save it in C order
+        #%% after motion correction, find the memmap file in F order and save it in C order and tiffs
 
-        # load the memmap file
+        t0 = time.perf_counter() # time for saving tiffs and calculate row correlation
+        logger.info(f"Saving motion corrected tiffs and calculating row correlation started.")
 
-        Yr, dims, T = cm.load_memmap(fname_mc[0])
-        images = Yr.T.reshape((T,) + dims, order='F')
-
-        shape = (T,) + dims
-        dtype = Yr.dtype
-        mmap_file = fname_mc[0]
-        nFrames = images.shape[0]
-        #%% check if there is screen tearing
-        print('Checking for screen tearing...')
-        
-        if not os.path.exists(os.path.join(out_path, sesName+'_ave_row_corr.png')):
-            ref = np.mean(images[0:1000,:,:],axis=0)
-
-            # save ref
-            plt.figure(figsize=(6, 6))
-            plt.imshow(ref, cmap="gray")
-            plt.axis("off")
-            plt.tight_layout()
-
-            plt.savefig(os.path.join(out_path, sesName+"_reference.png"), dpi=300, bbox_inches="tight")
-            plt.close()
-
-            
-            #nFrames = 10000
-
-            # distribute work over CaImAn cluster
-            args = [
-                (ff, mmap_file, shape, dtype, ref)
-                for ff in range(nFrames)
-            ]
-
-            results = list(
-                tqdm(
-                    cluster.map(frame_row_corr_worker, args, chunksize=20),
-                    total=nFrames
-                )
-            )
-            ave_row_corr = np.array(results, dtype=np.float32)
-
-            savefigpath = os.path.join(out_path, sesName+'_ave_row_corr.png')
-            plt.figure()
-            plt.plot(ave_row_corr)
-            plt.show()
-            plt.savefig(savefigpath)
-            plt.close()
-
-        #%% save the motion_corrected video in tiffs
         print('Saving motion corrected video in tiffs...')
+        output_tiff_dir = os.path.join(ses, 'motion_corrected_tiffs') 
+        tiff_files = glob.glob(os.path.join(output_tiff_dir, '*.tif')) + \
+             glob.glob(os.path.join(output_tiff_dir, '*.tiff'))
 
+        # write tiff files, also compute row_correlation to check for screen tearing simultaneously
+        ave_row_corr = []
+        if not len(tiff_files) > 20: # some arbitrary number
         # load memmap (NO RAM copy)
-        d1, d2 = dims[:2]
-        output_tiff_dir = os.path.join(ses, 'motion_corrected_tiffs')  # CHANGE THIS
-        frames_per_tiff = 1000
-        n_tiffs = nFrames//frames_per_tiff+1
-        dtype_out = np.uint16
+            prev_nTiff = 0  # keep track of previous number of tiffs
+            for mIdx, mmap_file in enumerate(fname_mc):
 
-        os.makedirs(output_tiff_dir, exist_ok=True)
+                Yr, dims, T = cm.load_memmap(mmap_file)
+                images = Yr.T.reshape((T,) + dims, order='F')
 
-        # Load memmap (disk-backed)
-        
+                shape = (T,) + dims
+                dtype = Yr.dtype
+                mmap_file = fname_mc[mIdx]
+                nFrames = images.shape[0]
+                d1, d2 = dims[:2]
+                # CHANGE THIS
+                frames_per_tiff = 1000
+                n_tiffs = nFrames//frames_per_tiff+1
+                dtype_out = np.uint16
 
-        for i in tqdm(range(n_tiffs)):
-            start = int(i * frames_per_tiff)
-            end = int(min((i + 1) * frames_per_tiff, T))
+                os.makedirs(output_tiff_dir, exist_ok=True)
 
-            if start >= T:
-                break
+                # define reference frame for row correlation
+                if mIdx == 0:
+                    Nref = min(1000, nFrames)
+                    ref = images[:Nref].mean(axis=0).astype(np.float32)
 
-            out_path_tt = os.path.join(
-                output_tiff_dir,
-                sesName + f'_motion_corrected_part_{i:03d}.tif'
-            )
+                    # precompute reference normalization (rows 1:)
+                    ref0 = ref[1:].copy()
+                    ref0 -= ref0.mean(axis=1, keepdims=True)
+                    ref_norm = np.sqrt(np.sum(ref0 * ref0, axis=1))
+            # Load memmap (disk-backed)
             
-            if i==0:
-                output_tiff0 = out_path
 
-            with tifffile.TiffWriter(out_path_tt, bigtiff=True) as tif:
-                # iterate in smaller chunks inside each TIFF
-                for s in range(start, end, 1000):
-                    e = min(s + 1000, end)
+                for i in tqdm(range(n_tiffs)):
+                    start = int(i * frames_per_tiff)
+                    end = int(min((i + 1) * frames_per_tiff, T))
 
-                    # memmap slice (NO full RAM copy)
-                    Y_chunk = Yr[:, s:e]
+                    if start >= T:
+                        break
 
-                    # reshape -> (frames, height, width)
-                    Y_chunk = Y_chunk.reshape(
-                        (d1, d2, e - s),
-                        order='F'
-                    ).transpose(2, 0, 1)
-
-                    tif.write(
-                        Y_chunk.astype(dtype_out, copy=False),
-                        photometric='minisblack'
+                    out_path_tt = os.path.join(
+                        output_tiff_dir,
+                        sesName + f'_motion_corrected_part_{(i+prev_nTiff):03d}.tif'
                     )
+                    
+
+                    with tifffile.TiffWriter(out_path_tt, bigtiff=True) as tif:
+                        # iterate in smaller chunks inside each TIFF
+                        for s in range(start, end, 1000):
+                            e = min(s + 1000, end)
+
+                            # memmap slice (NO full RAM copy)
+                            Y_chunk = Yr[:, s:e]
+
+                            # reshape -> (frames, height, width)
+                            Y_chunk = Y_chunk.reshape(
+                                (d1, d2, e - s),
+                                order='F'
+                            ).transpose(2, 0, 1)
+
+                            corr_vals = frame_row_corr_batch(Y_chunk, ref0, ref_norm)
+                            ave_row_corr.extend(corr_vals.tolist())
+
+                            tif.write(
+                                Y_chunk.astype(dtype_out, copy=False),
+                                photometric='minisblack'
+                            )
+
+                prev_nTiff = prev_nTiff + n_tiffs
+
+        # plot ave_row_corr
+        savefigpath = os.path.join(out_path, sesName+'_ave_row_corr.png')
+        plt.figure()
+        plt.plot(ave_row_corr)
+        plt.show()
+        plt.savefig(savefigpath)
+        plt.close()
+
+        # check if there is screen tearing (ave_row_corr below 0.85)
+        if np.any(np.array(ave_row_corr) < 0.85):
+            # save the frames with low row correlation in csv
+            low_corr_indices = np.where(np.array(ave_row_corr) < 0.85)[0]
+            np.savetxt(os.path.join(out_path, sesName+'_low_row_corr_frames.csv'), low_corr_indices, delimiter=',', fmt='%d')
+           
+            logger.warning(f"Screen tearing detected! Low row correlation frames saved to {sesName+'_low_row_corr_frames.csv'}")
+        
+        logger.info(f"Saving motion corrected tiffs and calculating row correlation finished in ({time.perf_counter() - t0:.2f} s)")
 
         #%% save the first tiff file in c-order memmap 
         # save the tiff file to C order memmap file
+        t0 = time.perf_counter() # time for saving c-order memmap
 
         tiff_files = [
             os.path.join(output_tiff_dir, f)
@@ -260,17 +299,21 @@ def main():
 
         if not 'bord_px' in locals():
             bord_px = 0
-        fname_new = cm.save_memmap(tiff_files,base_name=sesName+'_', order='C',
-                                    border_to_0=bord_px)
+
+        # save downsampled memmap only for now
+        #fname_new = cm.save_memmap(tiff_files,base_name=sesName+'_', order='C',
+        #                            border_to_0=bord_px)
 
         # spatial downsample
-        fname_DS = cm.save_memmap(tiff_files,base_name=sesName+'_ds2_', order='C',
+        fname_DS = cm.save_memmap(tiff_files,base_name=sesName+'_ds2_', order='C', resize_fact=(0.5,0.5,1),
                             border_to_0=bord_px)
         #print(tiff_files)
 
         
         # delete F_order memmap file and all individual c-order memmap file except for the first one
-        pattern = re.compile(rf"^{re.escape(sesName)}_(\d{{4}})_d1")
+        pattern = re.compile(
+            rf"^{re.escape(sesName)}.*_(\d{{4}})_d1"
+        )
 
         for fname in os.listdir(out_path):
             match = pattern.match(fname)
@@ -280,6 +323,18 @@ def main():
                     fullpath = os.path.join(out_path, fname)
                     print(f"Deleting {fullpath}")
                     os.remove(fullpath)
+
+        logger.info(f"Saved C-order memmap in ({time.perf_counter() - t0:.2f} s)")
+
+            
+            #plt.figure()
+            # plt.imshow(images[27362], cmap='gray'
+            #            )
+            # plt.show()
+            # plt.savefig(os.path.join(out_path, sesName+'_frame_27362.png'))
+
+        # clean up
+
 
         # ---- release F-order memmap cleanly ----
         # del images
@@ -297,7 +352,16 @@ def main():
 # ---------------- REQUIRED ON WINDOWS ----------------
 if __name__ == "__main__":
     mp.freeze_support()
-    main()
+
+    # process single folder
+    root_path = r'Y:\HongliWang\Miniscope\ASDC001\ASDC001_260118'
+    if_batch = False
+    main(root_path, if_batch)
+
+    # batch process
+    #root_path = r'Y:\HongliWang\Miniscope\ASDC001'
+    #if_batch = True
+    #main(root_path, if_batch)
 
 
     ## spatially downsample the video 
