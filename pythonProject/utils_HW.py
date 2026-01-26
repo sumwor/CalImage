@@ -1,5 +1,35 @@
 import numpy as np
 import caiman as cm
+from numpy.fft import fft, ifft
+
+def row_phase_jump_score_batch(frames, eps=1e-8):
+    """
+    frames: (T, H, W) float32
+    returns: (T,) tearing score per frame
+    """
+    T, H, W = frames.shape
+    scores = np.zeros(T, dtype=np.float32)
+
+    # optional speedup: downsample columns
+    frames = frames[:, :, ::2]
+
+    for t in range(T):
+        F = frames[t]
+
+        # FFT along rows
+        Ff = fft(F, axis=1)
+
+        # phase correlation between adjacent rows
+        R = Ff[:-1] * np.conj(Ff[1:])
+        R /= np.abs(R) + eps
+        corr = np.real(ifft(R, axis=1))
+
+        shifts = np.argmax(corr, axis=1)
+
+        # tearing = abrupt phase jump
+        scores[t] = np.max(np.abs(np.diff(shifts)))
+
+    return scores
 
 def convert_F_to_C_memmap(
     fname_f,
@@ -104,3 +134,42 @@ def frame_row_corr(frame, ref):
     # print(corr_vals_f2)
     # print(corr_vals_ctrl)
 
+def rowwise_discontinuity_score(frames, eps=1e-8):
+    """
+    frames: (T, H, W)
+    returns: per-frame min adjacent-row correlation (T,)
+    """
+    frames = frames.astype(np.float32)
+
+    # subtract row-wise mean: (T, H, W)
+    F0 = frames - frames.mean(axis=2, keepdims=True)
+
+    # row norms: (T, H)
+    Fn = np.linalg.norm(F0, axis=2) + eps
+
+    # adjacent row dot products: (T, H-1)
+    num = np.sum(F0[:, :-1, :] * F0[:, 1:, :], axis=2)
+
+    # normalization: (T, H-1)
+    denom = Fn[:, :-1] * Fn[:, 1:]
+
+    corr = num / denom
+
+    # per-frame minimum adjacent-row correlation
+    return corr.min(axis=1)
+
+
+def gradient_energy_spike_score(frames):
+    """
+    frames: (T, H, W)
+    returns: per-frame max vertical gradient energy (T,)
+    """
+    # vertical gradient
+    Gy = np.abs(frames[:, 1:, :] - frames[:, :-1, :])
+
+    # mean over width → (T, H-1)
+    row_energy = Gy.mean(axis=2)
+
+    # tearing → one row dominates
+    score = np.max(row_energy, axis=1) / (np.median(row_energy, axis=1) + 1e-8)
+    return score

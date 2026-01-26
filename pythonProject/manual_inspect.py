@@ -36,14 +36,16 @@ class ROIReviewerTk:
         self.path_name = os.path.dirname(filename)
         if not match:
             self.ses_name = None
-            fovFilename = glob.glob(os.path.join(self.path_name,'template.tiff'))
-            self.fov = tifffile.imread(fovFilename)
+            #fovFilename = glob.glob(os.path.join(self.path_name,'template.tiff'))
+            #self.fov = tifffile.imread(fovFilename)
+            self.fov = f.estimates.Cn
         else:
             self.ses_name = match.group()
             fovFilename = glob.glob(os.path.join(self.path_name,self.ses_name+'*template.pickle'))
             with open(fovFilename[0], 'rb') as f_temp:
                 tempData = pickle.load(f_temp)
-            self.fov = tempData['template']
+            #self.fov = tempData['template']
+            self.fov = f.estimates.Cn
         
 
         

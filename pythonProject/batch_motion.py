@@ -198,7 +198,12 @@ def main(root_path, if_batch=False):
              glob.glob(os.path.join(output_tiff_dir, '*.tiff'))
 
         # write tiff files, also compute row_correlation to check for screen tearing simultaneously
-        ave_row_corr = []
+        #ave_row_corr = []
+        #is_tearing = []
+        #save_corr_path = os.path.join(out_path, 'row_corr_inspect')
+        #corr_threshold = 0.85
+        #os.makedirs(save_corr_path, exist_ok=True)
+
         if not len(tiff_files) > 20: # some arbitrary number
         # load memmap (NO RAM copy)
             prev_nTiff = 0  # keep track of previous number of tiffs
@@ -222,12 +227,8 @@ def main(root_path, if_batch=False):
                 # define reference frame for row correlation
                 if mIdx == 0:
                     Nref = min(1000, nFrames)
-                    ref = images[:Nref].mean(axis=0).astype(np.float32)
-
-                    # precompute reference normalization (rows 1:)
-                    ref0 = ref[1:].copy()
-                    ref0 -= ref0.mean(axis=1, keepdims=True)
-                    ref_norm = np.sqrt(np.sum(ref0 * ref0, axis=1))
+                    ref_frames = images[:Nref].astype(np.float32)
+                        # ----- adjacent row correlation baseline -----
             # Load memmap (disk-backed)
             
 
@@ -258,8 +259,32 @@ def main(root_path, if_batch=False):
                                 order='F'
                             ).transpose(2, 0, 1)
 
-                            corr_vals = frame_row_corr_batch(Y_chunk, ref0, ref_norm)
-                            ave_row_corr.extend(corr_vals.tolist())
+                            # --- tearing metrics ---
+                            # row_disc = rowwise_discontinuity_score(Y_chunk)
+                            # grad_spike = gradient_energy_spike_score(Y_chunk)
+
+                            # # store for inspection
+                            # ave_row_corr.extend(row_disc.tolist())
+                            # grad_energy.extend(grad_spike.tolist())
+                            # # ---------- row-wise adjacent correlation ----------
+                            # frames = Y_chunk.astype(np.float32)
+                            # tear_score = row_phase_jump_score_batch(frames)
+
+                            # if mIdx == 0:
+                            #     tear_ref = tear_score[:Nref]
+                            #     MED = np.median(tear_ref)
+                            #     MAD = np.median(np.abs(tear_ref - MED)) + 1e-6
+
+                            # # normalized tearing score
+                            # tear_z = (tear_score - MED) / MAD
+
+                            # # flag tearing (threshold is robust, not absolute)
+                            # is_tearing_chunk = tear_z > 6.0
+
+                            # # store for inspection
+                            # is_tearing.extend(is_tearing_chunk.tolist())
+                            # ave_row_corr.extend(tear_score.tolist())
+
 
                             tif.write(
                                 Y_chunk.astype(dtype_out, copy=False),
@@ -268,61 +293,86 @@ def main(root_path, if_batch=False):
 
                 prev_nTiff = prev_nTiff + n_tiffs
 
-        # plot ave_row_corr
-        savefigpath = os.path.join(out_path, sesName+'_ave_row_corr.png')
-        plt.figure()
-        plt.plot(ave_row_corr)
-        plt.show()
-        plt.savefig(savefigpath)
-        plt.close()
+            # plot ave_row_corr
+            # n_tear_rows = np.array(ave_row_corr)
 
-        # check if there is screen tearing (ave_row_corr below 0.85)
-        if np.any(np.array(ave_row_corr) < 0.85):
-            # save the frames with low row correlation in csv
-            low_corr_indices = np.where(np.array(ave_row_corr) < 0.85)[0]
-            np.savetxt(os.path.join(out_path, sesName+'_low_row_corr_frames.csv'), low_corr_indices, delimiter=',', fmt='%d')
-           
-            logger.warning(f"Screen tearing detected! Low row correlation frames saved to {sesName+'_low_row_corr_frames.csv'}")
-        
-        logger.info(f"Saving motion corrected tiffs and calculating row correlation finished in ({time.perf_counter() - t0:.2f} s)")
+            # is_tearing = (n_tear_rows >= 1) & (n_tear_rows <= 100)
+            # tear_row_idx = np.where(tear_rows[t])[0]
+            # # find tearing adaptively
+            # n_tear_rows = np.array(ave_row_corr)
+            # tear_score = np.array(grad_energy)
+
+            # fig, ax = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
+
+            # #ax[0].plot(n_tear_rows, lw=0.8)
+            # ax[0].set_ylabel('# tear rows')
+            # ax[0].axhline(2, color='r', ls='--', alpha=0.5)
+            # ax[0].axhline(20, color='r', ls='--', alpha=0.5)
+            # ax[0].set_title('Row-localized tearing detection')
+
+            # ax[1].plot((ave_row_corr[0:40000]-MED)/MAD)
+            # ax[1].set_ylabel('normalized tear score')
+            # ax[1].set_xlabel('frame')
+
+            # plt.tight_layout()
+            # plt.savefig(os.path.join(out_path, sesName + '_tearing_inspection.png'))
+            # plt.close()
+
+            # plt.figure()
+            # plt.imshow(images[2257], cmap='gray'
+            #             )
+            # plt.show()
+            # plt.savefig(os.path.join(out_path, sesName+'_frame_2257.png'))
+            # plt.close()
+
+            # # save the frames with low row correlation in csv
+            # tear_indices = np.where((n_tear_rows >= 1) & (n_tear_rows <= 100))[0]
+            # np.savetxt(os.path.join(out_path, sesName+'_teared_frames.csv'), tear_indices, delimiter=',', fmt='%d')
+
+            # logger.warning(f"Screen tearing detected! High tear score frames saved to {sesName+'_teared_frames.csv'}")
+
+        logger.info(f"Saving motion corrected tiffs in ({time.perf_counter() - t0:.2f} s)")
 
         #%% save the first tiff file in c-order memmap 
         # save the tiff file to C order memmap file
         t0 = time.perf_counter() # time for saving c-order memmap
 
-        tiff_files = [
-            os.path.join(output_tiff_dir, f)
-            for f in os.listdir(output_tiff_dir)
-            if f.lower().endswith((".tif", ".tiff"))
-        ]
-        #print(tiff_files)
+        pattern = sesName + '_ds2_' + '*_order_C_frames_*.mmap'
+        matches = glob.glob(os.path.join(out_path, pattern))
+        if len(matches) == 0:
+            tiff_files = [
+                os.path.join(output_tiff_dir, f)
+                for f in os.listdir(output_tiff_dir)
+                if f.lower().endswith((".tif", ".tiff"))
+            ]
+            #print(tiff_files)
 
-        if not 'bord_px' in locals():
-            bord_px = 0
+            if not 'bord_px' in locals():
+                bord_px = 0
 
-        # save downsampled memmap only for now
-        #fname_new = cm.save_memmap(tiff_files,base_name=sesName+'_', order='C',
-        #                            border_to_0=bord_px)
+            # save downsampled memmap only for now
+            #fname_new = cm.save_memmap(tiff_files,base_name=sesName+'_', order='C',
+            #                            border_to_0=bord_px)
 
-        # spatial downsample
-        fname_DS = cm.save_memmap(tiff_files,base_name=sesName+'_ds2_', order='C', resize_fact=(0.5,0.5,1),
-                            border_to_0=bord_px)
-        #print(tiff_files)
+            # spatial downsample
+            fname_DS = cm.save_memmap(tiff_files,base_name=sesName+'_ds2_', order='C', resize_fact=(0.5,0.5,1),
+                                border_to_0=bord_px)
+            #print(tiff_files)
 
-        
-        # delete F_order memmap file and all individual c-order memmap file except for the first one
-        pattern = re.compile(
-            rf"^{re.escape(sesName)}.*_(\d{{4}})_d1"
-        )
+            
+            # delete F_order memmap file and all individual c-order memmap file except for the first one
+            pattern = re.compile(
+                rf"^{re.escape(sesName)}.*_(\d{{4}})_d1"
+            )
 
-        for fname in os.listdir(out_path):
-            match = pattern.match(fname)
-            if match:
-                idx = int(match.group(1))
-                if idx != 0:  # keep sesName_0000_d1*
-                    fullpath = os.path.join(out_path, fname)
-                    print(f"Deleting {fullpath}")
-                    os.remove(fullpath)
+            for fname in os.listdir(out_path):
+                match = pattern.match(fname)
+                if match:
+                    idx = int(match.group(1))
+                    if idx != 0:  # keep sesName_0000_d1*
+                        fullpath = os.path.join(out_path, fname)
+                        print(f"Deleting {fullpath}")
+                        os.remove(fullpath)
 
         logger.info(f"Saved C-order memmap in ({time.perf_counter() - t0:.2f} s)")
 
@@ -354,14 +404,14 @@ if __name__ == "__main__":
     mp.freeze_support()
 
     # process single folder
-    root_path = r'Y:\HongliWang\Miniscope\ASDC001\ASDC001_260118'
-    if_batch = False
-    main(root_path, if_batch)
+    # root_path = r'Y:\HongliWang\Miniscope\ASDC001\ASDC001_260111'
+    # if_batch = False
+    # main(root_path, if_batch)
 
     # batch process
-    #root_path = r'Y:\HongliWang\Miniscope\ASDC001'
-    #if_batch = True
-    #main(root_path, if_batch)
+    root_path = r'Y:\HongliWang\Miniscope\ASDC001'
+    if_batch = True
+    main(root_path, if_batch)
 
 
     ## spatially downsample the video 
